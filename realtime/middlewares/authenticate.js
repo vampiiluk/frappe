@@ -4,6 +4,20 @@ const { get_conf, get_redis_subscriber } = require("../../node_utils");
 const conf = get_conf();
 const redisClient = get_redis_subscriber("redis_queue");
 
+function get_local_web_base() {
+	// Auth requests must reach the local web server, not the public URL: the
+	// origin hostname may not resolve from this machine (behind a proxy/CDN).
+	if (conf.localhost_url) {
+		return conf.localhost_url;
+	}
+	if (conf.developer_mode) {
+		return `http://127.0.0.1:${conf.webserver_port || 80}`;
+	}
+	// Production: nginx terminates TLS and routes by Host, so plain HTTP on 80
+	// is correct even when webserver_port points at gunicorn (e.g. 8000).
+	return "http://127.0.0.1:80";
+}
+
 async function getSecretFromRedis() {
 	if (!redisClient.isOpen) await redisClient.connect();
 	const val = await redisClient.get("socketio_auth_secret");
@@ -58,11 +72,13 @@ function authenticate_with_frappe(socket, next) {
 		if (secret) {
 			headers["X-Frappe-Socket-Secret"] = secret;
 		}
+		const web_base = new URL(get_local_web_base());
+		const transport = web_base.protocol === "https:" ? require("https") : http;
 		return new Promise((resolve, reject) => {
-			const req = http.request(
+			const req = transport.request(
 				{
-					host: "127.0.0.1",
-					port: 80,
+					host: web_base.hostname,
+					port: web_base.port || (web_base.protocol === "https:" ? 443 : 80),
 					path,
 					method: opts.method || "GET",
 					headers: { ...headers, Host: get_site_name(socket) },
