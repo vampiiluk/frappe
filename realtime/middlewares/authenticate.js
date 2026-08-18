@@ -1,6 +1,6 @@
 const cookie = require("cookie");
+const http = require("http");
 const { get_conf, get_redis_subscriber } = require("../../node_utils");
-const { get_url } = require("../utils");
 const conf = get_conf();
 const redisClient = get_redis_subscriber("redis_queue");
 
@@ -58,9 +58,26 @@ function authenticate_with_frappe(socket, next) {
 		if (secret) {
 			headers["X-Frappe-Socket-Secret"] = secret;
 		}
-		return fetch(get_url(socket, path), {
-			...opts,
-			headers,
+		return new Promise((resolve, reject) => {
+			const req = http.request(
+				{
+					host: "127.0.0.1",
+					port: 80,
+					path,
+					method: opts.method || "GET",
+					headers: { ...headers, Host: get_site_name(socket) },
+					timeout: 10000,
+				},
+				(res) => {
+					let body = "";
+					res.setEncoding("utf8");
+					res.on("data", (chunk) => (body += chunk));
+					res.on("end", () => resolve({ json: async () => JSON.parse(body) }));
+				}
+			);
+			req.on("error", reject);
+			req.on("timeout", () => req.destroy(new Error("ETIMEDOUT")));
+			req.end();
 		});
 	};
 
