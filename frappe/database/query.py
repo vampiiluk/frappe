@@ -84,7 +84,7 @@ def _apply_date_field_filter_conversion(value, operator: str, doctype: str, fiel
 		elif isinstance(value, datetime.datetime):
 			return value.date()
 
-	except AttributeError, TypeError, KeyError:
+	except (AttributeError, TypeError, KeyError):
 		pass
 
 	return value
@@ -580,6 +580,13 @@ class Engine:
 			frappe.throw(_("Document cannot be used as a filter value"))
 		_operator = operator
 
+		# _assign and _liked_by store a JSON array of user ids, so `=`/`!=` never match a
+		# single member; treat them as `like`/`not like` against the serialized value.
+		if isinstance(field, str) and field in ("_assign", "_liked_by") and _operator in ("=", "!="):
+			_operator = "like" if _operator == "=" else "not like"
+			if isinstance(_value, str) and _value:
+				_value = f"%{_value}%"
+
 		if _operator.lower() in ("timespan", "previous", "next"):
 			from frappe.model.db_query import get_date_range
 
@@ -613,8 +620,8 @@ class Engine:
 		if self.db_query_compat and _value is None and _operator.casefold() in ("in", "not in"):
 			_value = ("",)
 
-		if _operator in NESTED_SET_OPERATORS:
-			hierarchy = _operator
+		if _operator.casefold() in NESTED_SET_OPERATORS:
+			hierarchy = _operator.casefold()
 			docname = _value
 
 			# Use the original field name string for get_field if _field was converted
@@ -667,7 +674,7 @@ class Engine:
 				else:
 					try:
 						fallback_value = int(fallback_sql)
-					except ValueError, TypeError:
+					except (ValueError, TypeError):
 						fallback_value = fallback_sql
 
 				return operator_fn(_field, ValueWrapper(fallback_value))
@@ -696,7 +703,7 @@ class Engine:
 				else:
 					try:
 						fallback_value = int(fallback_sql)
-					except ValueError, TypeError:
+					except (ValueError, TypeError):
 						fallback_value = fallback_sql
 
 				if fallback_value == _value:
@@ -1054,7 +1061,14 @@ class Engine:
 			return self.permitted_fields_cache[cache_key]
 		else:
 			# for read permission, use standard permitted fields
-			return self._get_cached_permitted_fields(doctype, parenttype, permission_type)
+			permitted_fields = self._get_cached_permitted_fields(doctype, parenttype, permission_type)
+			if doctype == "User" and "user_type" not in permitted_fields:
+				# user_type is permlevel 1 but not itself sensitive, and the built-in
+				# Link-field search (user.user_query) filters by it for every caller.
+				# Allow it for filtering only - do not mutate the cached set, since that
+				# is also used to check permission for selecting/returning fields.
+				return permitted_fields | {"user_type"}
+			return permitted_fields
 
 	def parse_string_field(self, field: str):
 		"""
